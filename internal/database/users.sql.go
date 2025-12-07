@@ -9,12 +9,12 @@ import (
 	"context"
 )
 
-const clearusers = `-- name: Clearusers :exec
-TRUNCATE TABLE users
+const clearUsers = `-- name: ClearUsers :exec
+TRUNCATE TABLE users CASCADE
 `
 
-func (q *Queries) Clearusers(ctx context.Context) error {
-	_, err := q.db.ExecContext(ctx, clearusers)
+func (q *Queries) ClearUsers(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, clearUsers)
 	return err
 }
 

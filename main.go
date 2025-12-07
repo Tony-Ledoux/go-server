@@ -22,8 +22,17 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 }
 
-type Chirp struct {
-	Body string `json:"body"`
+type ChirpRequest struct {
+	Body   string    `json:"body"`
+	UserId uuid.UUID `json:"user_id"`
+}
+
+type ChirpResponse struct {
+	Id        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserId    uuid.UUID `json:"user_id"`
 }
 
 type UserRequest struct {
@@ -64,7 +73,7 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.fileServerHits.Store(0)
 	// clear users table
-	cfg.dbQueries.Clearusers(r.Context())
+	cfg.dbQueries.ClearUsers(r.Context())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
@@ -120,39 +129,6 @@ func main() {
 
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 
-	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
-		ct := r.Header.Get("Content-Type")
-		if !strings.HasPrefix(ct, "application/json") {
-			respondWithError(w, http.StatusUnsupportedMediaType, "something went wrong")
-			return
-		}
-		// try to decode the body
-		var chirp Chirp
-		if err := json.NewDecoder(r.Body).Decode(&chirp); err != nil {
-			respondWithError(w, http.StatusBadRequest, "can't decode json")
-			return
-		}
-		// now valid json and in chirp
-		if len(chirp.Body) > 140 {
-			respondWithError(w, http.StatusBadRequest, "Chirp is to long")
-		} else {
-			// replace bad words in body with asterix
-			bad_words := map[string]bool{
-				"kerfuffle": true,
-				"sharbert":  true,
-				"fornax":    true,
-			}
-			words := strings.Split(chirp.Body, " ")
-			for i, word := range words {
-				if bad_words[strings.ToLower(word)] {
-					words[i] = "****"
-				}
-			}
-			res := strings.Join(words, " ")
-			respondWithJSON(w, http.StatusOK, map[string]string{"cleaned_body": res})
-		}
-	})
-
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		ct := r.Header.Get("Content-Type")
 		if !strings.HasPrefix(ct, "application/json") {
@@ -184,7 +160,67 @@ func main() {
 			respondWithJSON(w, http.StatusCreated, uj)
 		}
 	})
+	// handle chirps
+	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		ct := r.Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "application/json") {
+			respondWithError(w, http.StatusUnsupportedMediaType, "something went wrong")
+			return
+		}
+		var cr ChirpRequest
+		if err := json.NewDecoder(r.Body).Decode(&cr); err != nil {
+			respondWithError(w, http.StatusBadRequest, "can't decode json")
+			return
+		}
+		// chirps must have a body and a user_id
+		if len(cr.Body) == 0 || len(cr.UserId) == 0 {
+			respondWithError(w, http.StatusBadRequest, "invalid format")
+			return
+		}
+		if len(cr.Body) > 140 {
+			respondWithError(w, http.StatusBadRequest, "Chirp is to long")
+			return
+		}
+		// this is a valid chirp store in the database and return it
+		params := database.CreateChirpParams{
+			Body:   cr.Body,
+			UserID: cr.UserId,
+		}
+		chirp, err := apiCfg.dbQueries.CreateChirp(r.Context(), params)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "can't create chirp")
+			return
+		}
+		ch := ChirpResponse{
+			Id:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserId:    chirp.UserID,
+		}
+		respondWithJSON(w, http.StatusCreated, ch)
 
+	})
+	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		dbChirps, err := apiCfg.dbQueries.ListChrips(r.Context())
+		if err != nil {
+			respondWithError(w, http.StatusServiceUnavailable, "a problem getting chirps")
+			return
+		}
+		// Convert []database.Chirp -> []chirpResponse
+		chirps := make([]ChirpResponse, 0, len(dbChirps))
+		for _, c := range dbChirps {
+			chirps = append(chirps, ChirpResponse{
+				Id:        c.ID,
+				CreatedAt: c.CreatedAt,
+				UpdatedAt: c.UpdatedAt,
+				Body:      c.Body,
+				UserId:    c.UserID,
+			})
+		}
+		respondWithJSON(w, http.StatusOK, chirps)
+
+	})
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}

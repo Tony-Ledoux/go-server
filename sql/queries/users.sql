@@ -8,5 +8,5 @@ VALUES (
 )
 RETURNING *;
 
--- name: Clearusers :exec
-TRUNCATE TABLE users;
+-- name: ClearUsers :exec
+TRUNCATE TABLE users CASCADE;
