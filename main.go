@@ -1,16 +1,23 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+
+	"github.com/Tony-Ledoux/go-server/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileServerHits atomic.Int32
+	dbQueries      *database.Queries
 }
 
 type Chirp struct {
@@ -62,12 +69,21 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 }
 
 func main() {
+	godotenv.Load()
+	apiCfg := &apiConfig{}
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		fmt.Println("database error: ")
+		os.Exit(1)
+	}
+	dbQueries := database.New(db)
+	apiCfg.dbQueries = dbQueries
 	mux := http.NewServeMux()
 	server := &http.Server{
 		Addr:    ":8080",
 		Handler: mux,
 	}
-	apiCfg := &apiConfig{}
 	log.Println("Starting server on :8080")
 
 	mux.HandleFunc("GET /api/healthz", func(resp http.ResponseWriter, req *http.Request) {
