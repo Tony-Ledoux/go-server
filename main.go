@@ -28,11 +28,11 @@ type ChirpRequest struct {
 }
 
 type ChirpResponse struct {
-	Id        uuid.UUID `json:"id"`
+	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Body      string    `json:"body"`
-	UserId    uuid.UUID `json:"user_id"`
+	UserID    uuid.UUID `json:"user_id"`
 }
 
 type UserRequest struct {
@@ -192,11 +192,11 @@ func main() {
 			return
 		}
 		ch := ChirpResponse{
-			Id:        chirp.ID,
+			ID:        chirp.ID,
 			CreatedAt: chirp.CreatedAt,
 			UpdatedAt: chirp.UpdatedAt,
 			Body:      chirp.Body,
-			UserId:    chirp.UserID,
+			UserID:    chirp.UserID,
 		}
 		respondWithJSON(w, http.StatusCreated, ch)
 
@@ -211,14 +211,36 @@ func main() {
 		chirps := make([]ChirpResponse, 0, len(dbChirps))
 		for _, c := range dbChirps {
 			chirps = append(chirps, ChirpResponse{
-				Id:        c.ID,
+				ID:        c.ID,
 				CreatedAt: c.CreatedAt,
 				UpdatedAt: c.UpdatedAt,
 				Body:      c.Body,
-				UserId:    c.UserID,
+				UserID:    c.UserID,
 			})
 		}
 		respondWithJSON(w, http.StatusOK, chirps)
+
+	})
+
+	mux.HandleFunc("GET /api/chirps/{chirpID}", func(w http.ResponseWriter, r *http.Request) {
+		id, err := uuid.Parse(r.PathValue("chirpID"))
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "chirp id not valid")
+			return
+		}
+		dbChirp, err := apiCfg.dbQueries.GetChirpById(r.Context(), id)
+		if err != nil {
+			respondWithError(w, http.StatusNotFound, "chirp not found")
+			return
+		}
+		ch := ChirpResponse{
+			ID:        dbChirp.ID,
+			CreatedAt: dbChirp.CreatedAt,
+			UpdatedAt: dbChirp.UpdatedAt,
+			Body:      dbChirp.Body,
+			UserID:    dbChirp.UserID,
+		}
+		respondWithJSON(w, http.StatusOK, ch)
 
 	})
 	if err := server.ListenAndServe(); err != nil {
