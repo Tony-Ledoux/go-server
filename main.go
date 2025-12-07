@@ -43,6 +43,24 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	errorstr := fmt.Sprintf(`{"error":"%s"}`, msg)
+	w.Write([]byte(errorstr))
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	data, err := json.Marshal(payload)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "can't marchal payload")
+		return
+	}
+	w.WriteHeader(code)
+	w.Write([]byte(data))
+}
+
 func main() {
 	mux := http.NewServeMux()
 	server := &http.Server{
@@ -68,26 +86,34 @@ func main() {
 
 	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
 		ct := r.Header.Get("Content-Type")
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		if !strings.HasPrefix(ct, "application/json") {
-			w.WriteHeader(http.StatusUnsupportedMediaType)
-			w.Write([]byte(`{"error": "something went wrong"}`))
+			respondWithError(w, http.StatusUnsupportedMediaType, "something went wrong")
 			return
 		}
 		// try to decode the body
 		var chirp Chirp
 		if err := json.NewDecoder(r.Body).Decode(&chirp); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`{"error": "something went wrong"}`))
+			respondWithError(w, http.StatusBadRequest, "can't decode json")
 			return
 		}
 		// now valid json and in chirp
 		if len(chirp.Body) > 140 {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`{"error":"Chirp is to long"}`))
+			respondWithError(w, http.StatusBadRequest, "Chirp is to long")
 		} else {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"valid":true}`))
+			// replace bad words in body with asterix
+			bad_words := map[string]bool{
+				"kerfuffle": true,
+				"sharbert":  true,
+				"fornax":    true,
+			}
+			words := strings.Split(chirp.Body, " ")
+			for i, word := range words {
+				if bad_words[strings.ToLower(word)] {
+					words[i] = "****"
+				}
+			}
+			res := strings.Join(words, " ")
+			respondWithJSON(w, http.StatusOK, map[string]string{"cleaned_body": res})
 		}
 	})
 
