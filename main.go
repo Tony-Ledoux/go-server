@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Tony-Ledoux/go-server/internal/auth"
 	"github.com/Tony-Ledoux/go-server/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -36,7 +37,8 @@ type ChirpResponse struct {
 }
 
 type UserRequest struct {
-	Email string `json:"email"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type User struct {
@@ -128,7 +130,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
-
+	// CREATE USER
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		ct := r.Header.Get("Content-Type")
 		if !strings.HasPrefix(ct, "application/json") {
@@ -142,11 +144,20 @@ func main() {
 			return
 		}
 		// now valid json and in ur
-		if len(ur.Email) == 0 {
-			respondWithError(w, http.StatusBadRequest, "please provide a email")
+		if len(ur.Email) == 0 || len(ur.Password) == 0 {
+			respondWithError(w, http.StatusBadRequest, "please provide a email and password")
 			return
 		} else {
-			user, err := apiCfg.dbQueries.CreateUser(r.Context(), ur.Email)
+			hash, err := auth.HashPassword(ur.Password)
+			if err != nil {
+				respondWithError(w, http.StatusBadRequest, "can't hash password")
+				return
+			}
+			params := database.CreateUserParams{
+				Email:          ur.Email,
+				HashedPassword: hash,
+			}
+			user, err := apiCfg.dbQueries.CreateUser(r.Context(), params)
 			if err != nil {
 				respondWithError(w, http.StatusBadRequest, "can't create user")
 				return
@@ -159,6 +170,45 @@ func main() {
 			}
 			respondWithJSON(w, http.StatusCreated, uj)
 		}
+	})
+	// LOGIN USER
+	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
+		ct := r.Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "application/json") {
+			respondWithError(w, http.StatusUnsupportedMediaType, "something went wrong")
+			return
+		}
+		// try to decode the body
+		var ur UserRequest
+		if err := json.NewDecoder(r.Body).Decode(&ur); err != nil {
+			respondWithError(w, http.StatusBadRequest, "can't decode json")
+			return
+		}
+		// now valid json and in ur
+		if len(ur.Email) == 0 || len(ur.Password) == 0 {
+			respondWithError(w, http.StatusBadRequest, "please provide a email and password")
+			return
+		}
+		// get the user from the database
+		dbUser, err := apiCfg.dbQueries.GetUserByName(r.Context(), ur.Email)
+		if err != nil {
+			respondWithError(w, http.StatusForbidden, "incorrect user or password")
+			return
+		}
+		//should be a valid user in the database, check the hashed password
+		validPassword, err := auth.CheckPasswordHash(ur.Password, dbUser.HashedPassword)
+		if err != nil || !validPassword {
+			respondWithError(w, http.StatusUnauthorized, "incorrect user or password")
+			return
+		}
+		//should be a valid password
+		u := User{
+			ID:        dbUser.ID,
+			CreatedAt: dbUser.CreatedAt,
+			UpdatedAt: dbUser.UpdatedAt,
+			Email:     dbUser.Email,
+		}
+		respondWithJSON(w, http.StatusOK, u)
 	})
 	// handle chirps
 	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +251,7 @@ func main() {
 		respondWithJSON(w, http.StatusCreated, ch)
 
 	})
+	// GET ALL CHIRPS
 	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		dbChirps, err := apiCfg.dbQueries.ListChrips(r.Context())
 		if err != nil {
@@ -221,7 +272,7 @@ func main() {
 		respondWithJSON(w, http.StatusOK, chirps)
 
 	})
-
+	// GET CHIRP BY ID
 	mux.HandleFunc("GET /api/chirps/{chirpID}", func(w http.ResponseWriter, r *http.Request) {
 		id, err := uuid.Parse(r.PathValue("chirpID"))
 		if err != nil {
