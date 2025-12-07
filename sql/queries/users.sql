@@ -7,3 +7,6 @@ VALUES (
     $1
 )
 RETURNING *;
+
+-- name: Clearusers :exec
+TRUNCATE TABLE users;

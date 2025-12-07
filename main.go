@@ -9,8 +9,10 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/Tony-Ledoux/go-server/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -22,6 +24,17 @@ type apiConfig struct {
 
 type Chirp struct {
 	Body string `json:"body"`
+}
+
+type UserRequest struct {
+	Email string `json:"email"`
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -44,7 +57,14 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
+	platform := os.Getenv("PLATFORM")
+	if platform != "dev" {
+		respondWithError(w, http.StatusForbidden, "only allowed in dev.")
+		return
+	}
 	cfg.fileServerHits.Store(0)
+	// clear users table
+	cfg.dbQueries.Clearusers(r.Context())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
@@ -130,6 +150,38 @@ func main() {
 			}
 			res := strings.Join(words, " ")
 			respondWithJSON(w, http.StatusOK, map[string]string{"cleaned_body": res})
+		}
+	})
+
+	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
+		ct := r.Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "application/json") {
+			respondWithError(w, http.StatusUnsupportedMediaType, "something went wrong")
+			return
+		}
+		// try to decode the body
+		var ur UserRequest
+		if err := json.NewDecoder(r.Body).Decode(&ur); err != nil {
+			respondWithError(w, http.StatusBadRequest, "can't decode json")
+			return
+		}
+		// now valid json and in ur
+		if len(ur.Email) == 0 {
+			respondWithError(w, http.StatusBadRequest, "please provide a email")
+			return
+		} else {
+			user, err := apiCfg.dbQueries.CreateUser(r.Context(), ur.Email)
+			if err != nil {
+				respondWithError(w, http.StatusBadRequest, "can't create user")
+				return
+			}
+			uj := User{
+				ID:        user.ID,
+				CreatedAt: user.CreatedAt,
+				UpdatedAt: user.UpdatedAt,
+				Email:     user.Email,
+			}
+			respondWithJSON(w, http.StatusCreated, uj)
 		}
 	})
 
