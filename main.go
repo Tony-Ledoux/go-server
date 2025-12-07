@@ -1,14 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
 type apiConfig struct {
 	fileServerHits atomic.Int32
+}
+
+type Chirp struct {
+	Body string `json:"body"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -59,6 +65,32 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
+
+	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+		ct := r.Header.Get("Content-Type")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if !strings.HasPrefix(ct, "application/json") {
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			w.Write([]byte(`{"error": "something went wrong"}`))
+			return
+		}
+		// try to decode the body
+		var chirp Chirp
+		if err := json.NewDecoder(r.Body).Decode(&chirp); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error": "something went wrong"}`))
+			return
+		}
+		// now valid json and in chirp
+		if len(chirp.Body) > 140 {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error":"Chirp is to long"}`))
+		} else {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"valid":true}`))
+		}
+	})
+
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
