@@ -21,6 +21,7 @@ import (
 type apiConfig struct {
 	fileServerHits atomic.Int32
 	dbQueries      *database.Queries
+	JWTSigningKey  string
 }
 
 type ChirpRequest struct {
@@ -42,10 +43,12 @@ type UserRequest struct {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -100,8 +103,11 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 }
 
 func main() {
+	// load the env file
 	godotenv.Load()
+	// create a empty apicfg struct
 	apiCfg := &apiConfig{}
+	// get db info and load queries
 	dbURL := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -110,6 +116,10 @@ func main() {
 	}
 	dbQueries := database.New(db)
 	apiCfg.dbQueries = dbQueries
+	// load JWT signing key and store it
+	JWTKey := os.Getenv("JWT_SECRET")
+	apiCfg.JWTSigningKey = JWTKey
+	// load the server
 	mux := http.NewServeMux()
 	server := &http.Server{
 		Addr:    ":8080",
@@ -202,17 +212,95 @@ func main() {
 			return
 		}
 		//should be a valid password
+		// generate the token
+		token, err := auth.MakeJWT(dbUser.ID, apiCfg.JWTSigningKey, time.Duration(3600)*time.Second)
+		if err != nil {
+			respondWithError(w, http.StatusServiceUnavailable, "cannot create JWT token")
+			return
+		}
+		// create refresh token
+		rft, err := auth.MakeRefreshToken()
+		if err != nil {
+			respondWithError(w, http.StatusServiceUnavailable, "cannot create refresh token")
+			return
+		}
+		params := database.CreateTokenParams{
+			Token:     rft,
+			UserID:    dbUser.ID,
+			ExpiresAt: time.Now().Add(1440 * time.Hour),
+			RevokedAt: sql.NullTime{},
+		}
+		//store token in db
+		_, err = apiCfg.dbQueries.CreateToken(r.Context(), params)
+		if err != nil {
+			respondWithError(w, http.StatusServiceUnavailable, "cannot store refresh token")
+			return
+		}
+
 		u := User{
-			ID:        dbUser.ID,
-			CreatedAt: dbUser.CreatedAt,
-			UpdatedAt: dbUser.UpdatedAt,
-			Email:     dbUser.Email,
+			ID:           dbUser.ID,
+			CreatedAt:    dbUser.CreatedAt,
+			UpdatedAt:    dbUser.UpdatedAt,
+			Email:        dbUser.Email,
+			Token:        token,
+			RefreshToken: rft,
 		}
 		respondWithJSON(w, http.StatusOK, u)
+	})
+
+	mux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, r *http.Request) {
+		token, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("error: %v", err))
+			return
+		}
+		// chould have a token now
+		db_id, err := apiCfg.dbQueries.GenerateAccessFromRefreshToken(r.Context(), token)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("error: %v", err))
+			return
+		}
+		tokenString, err := auth.MakeJWT(db_id, apiCfg.JWTSigningKey, time.Duration(3600)*time.Second)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("error: %v", err))
+			return
+		}
+		respondWithJSON(w, http.StatusOK, struct {
+			Token string `json:"token"`
+		}{
+			Token: tokenString,
+		})
+
+	})
+
+	mux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, r *http.Request) {
+		token, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, fmt.Sprintf("error: %v", err))
+			return
+		}
+		// chould have a token now
+		_, err = apiCfg.dbQueries.RevokeTokenByID(r.Context(), token)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, fmt.Sprintf("error: %v", err))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 	// handle chirps
 	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		ct := r.Header.Get("Content-Type")
+		token, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("error: %v", err))
+			return
+		}
+		Uid, err := auth.ValidateJWT(token, apiCfg.JWTSigningKey)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("error: %v", err))
+			return
+		}
+
 		if !strings.HasPrefix(ct, "application/json") {
 			respondWithError(w, http.StatusUnsupportedMediaType, "something went wrong")
 			return
@@ -222,8 +310,10 @@ func main() {
 			respondWithError(w, http.StatusBadRequest, "can't decode json")
 			return
 		}
+		// override the uiser id in the chirpRequest
+		cr.UserId = Uid
 		// chirps must have a body and a user_id
-		if len(cr.Body) == 0 || len(cr.UserId) == 0 {
+		if len(cr.Body) == 0 {
 			respondWithError(w, http.StatusBadRequest, "invalid format")
 			return
 		}
