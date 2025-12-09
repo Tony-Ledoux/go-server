@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,7 @@ type apiConfig struct {
 	fileServerHits atomic.Int32
 	dbQueries      *database.Queries
 	JWTSigningKey  string
+	PolkaKey       string
 }
 
 type ChirpRequest struct {
@@ -49,6 +51,7 @@ type User struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -119,6 +122,9 @@ func main() {
 	// load JWT signing key and store it
 	JWTKey := os.Getenv("JWT_SECRET")
 	apiCfg.JWTSigningKey = JWTKey
+	//load polka API KEY
+	PolkaKey := os.Getenv("POLKA_KEY")
+	apiCfg.PolkaKey = PolkaKey
 	// load the server
 	mux := http.NewServeMux()
 	server := &http.Server{
@@ -308,6 +314,7 @@ func main() {
 			Email:        dbUser.Email,
 			Token:        token,
 			RefreshToken: rft,
+			IsChirpyRed:  dbUser.IsChirpyRed.Bool,
 		}
 		respondWithJSON(w, http.StatusOK, u)
 	})
@@ -407,12 +414,32 @@ func main() {
 	})
 	// GET ALL CHIRPS
 	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		dbChirps, err := apiCfg.dbQueries.ListChrips(r.Context())
+		author_id_q := r.URL.Query().Get("author_id")
+		sort := r.URL.Query().Get("sort")
+		if len(sort) == 0 || sort != "desc" {
+			sort = "asc"
+		}
+
+		var dbChirps []database.Chirp
+		var err error
+
+		if len(author_id_q) == 0 {
+			dbChirps, err = apiCfg.dbQueries.ListChrips(r.Context())
+		} else {
+			author_id, parseErr := uuid.Parse(author_id_q)
+			if parseErr != nil {
+				respondWithError(w, http.StatusBadRequest, "invalid author_id")
+				return
+			}
+			dbChirps, err = apiCfg.dbQueries.ListChirpsFromAuthor(r.Context(), author_id)
+		}
+
 		if err != nil {
 			respondWithError(w, http.StatusServiceUnavailable, "a problem getting chirps")
 			return
 		}
-		// Convert []database.Chirp -> []chirpResponse
+
+		// Convert []database.Chirp -> []ChirpResponse
 		chirps := make([]ChirpResponse, 0, len(dbChirps))
 		for _, c := range dbChirps {
 			chirps = append(chirps, ChirpResponse{
@@ -423,8 +450,19 @@ func main() {
 				UserID:    c.UserID,
 			})
 		}
-		respondWithJSON(w, http.StatusOK, chirps)
 
+		// Sort chirps by CreatedAt
+		if sort == "asc" {
+			slices.SortFunc(chirps, func(a, b ChirpResponse) int {
+				return a.CreatedAt.Compare(b.CreatedAt)
+			})
+		} else {
+			slices.SortFunc(chirps, func(a, b ChirpResponse) int {
+				return b.CreatedAt.Compare(a.CreatedAt)
+			})
+		}
+
+		respondWithJSON(w, http.StatusOK, chirps)
 	})
 	// GET CHIRP BY ID
 	mux.HandleFunc("GET /api/chirps/{chirpID}", func(w http.ResponseWriter, r *http.Request) {
@@ -486,6 +524,47 @@ func main() {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+
+	})
+	// webhooks
+	mux.HandleFunc("POST /api/polka/webhooks", func(w http.ResponseWriter, r *http.Request) {
+		type Req struct {
+			Event string `json:"event"`
+			Data  struct {
+				UserId uuid.UUID `json:"user_id"`
+			} `json:"data"`
+		}
+		hapi, err := auth.GetAPIKey(r.Header)
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if hapi != apiCfg.PolkaKey {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		ct := r.Header.Get("Content-Type")
+		var rs Req
+		if !strings.HasPrefix(ct, "application/json") {
+			respondWithError(w, http.StatusUnsupportedMediaType, "something went wrong")
+			return
+		}
+		// try to decode the body
+		if err := json.NewDecoder(r.Body).Decode(&rs); err != nil {
+			respondWithError(w, http.StatusBadRequest, "can't decode json")
+			return
+		}
+		if rs.Event != "user.upgraded" {
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			//upgrade the user
+			_, err := apiCfg.dbQueries.UpgradeUserToRed(r.Context(), rs.Data.UserId)
+			if err != nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}
 
 	})
 	if err := server.ListenAndServe(); err != nil {
