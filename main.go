@@ -448,6 +448,46 @@ func main() {
 		respondWithJSON(w, http.StatusOK, ch)
 
 	})
+	// DELETE CHIRP
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", func(w http.ResponseWriter, r *http.Request) {
+		chirpId, err := uuid.Parse(r.PathValue("chirpID"))
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "Id malformed")
+			return
+		}
+		// search the chirp in the database
+		dbChirp, err := apiCfg.dbQueries.GetChirpById(r.Context(), chirpId)
+		if err != nil {
+			// no chirp found
+			respondWithError(w, http.StatusNotFound, "chirp not found")
+			return
+		}
+		// now i know the exits get the token
+		token, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, "auth malformed")
+			return
+		}
+		// validate the token
+		userId, err := auth.ValidateJWT(token, apiCfg.JWTSigningKey)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, "auth malformed")
+			return
+		}
+		// check the id vs the owner of the chirp
+		if userId != dbChirp.UserID {
+			respondWithError(w, http.StatusForbidden, "Naughty Boy, this is not your Chirp")
+			return
+		}
+		// delete the chirp
+		err = apiCfg.dbQueries.DeleteChirpById(r.Context(), dbChirp.ID)
+		if err != nil {
+			respondWithError(w, http.StatusServiceUnavailable, "Deleting chirp Failed")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	})
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
