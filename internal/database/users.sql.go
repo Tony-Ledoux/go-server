@@ -7,6 +7,8 @@ package database
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
 
 const clearUsers = `-- name: ClearUsers :exec
@@ -48,12 +50,56 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	return i, err
 }
 
+const getUserByID = `-- name: GetUserByID :one
+SELECT id, created_at, updated_at, email, hashed_password FROM users WHERE id = $1 LIMIT 1
+`
+
+func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUserByID, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.HashedPassword,
+	)
+	return i, err
+}
+
 const getUserByName = `-- name: GetUserByName :one
 SELECT id, created_at, updated_at, email, hashed_password FROM users WHERE email = $1 LIMIT 1
 `
 
 func (q *Queries) GetUserByName(ctx context.Context, email string) (User, error) {
 	row := q.db.QueryRowContext(ctx, getUserByName, email)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.HashedPassword,
+	)
+	return i, err
+}
+
+const updateUser = `-- name: UpdateUser :one
+UPDATE users
+SET email = $1,
+hashed_password = $2,
+updated_at = NOW()
+WHERE id = $3 RETURNING id, created_at, updated_at, email, hashed_password
+`
+
+type UpdateUserParams struct {
+	Email          string
+	HashedPassword string
+	ID             uuid.UUID
+}
+
+func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, updateUser, arg.Email, arg.HashedPassword, arg.ID)
 	var i User
 	err := row.Scan(
 		&i.ID,

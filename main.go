@@ -181,6 +181,70 @@ func main() {
 			respondWithJSON(w, http.StatusCreated, uj)
 		}
 	})
+	// update USER
+	mux.HandleFunc("PUT /api/users", func(w http.ResponseWriter, r *http.Request) {
+		//validate the request and the body
+		ct := r.Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "application/json") {
+			respondWithError(w, http.StatusUnsupportedMediaType, "something went wrong")
+			return
+		}
+		// try to decode the body
+		var ur UserRequest
+		if err := json.NewDecoder(r.Body).Decode(&ur); err != nil {
+			respondWithError(w, http.StatusBadRequest, "can't decode json")
+			return
+		}
+		// now valid json and in ur
+		if len(ur.Email) == 0 || len(ur.Password) == 0 {
+			respondWithError(w, http.StatusBadRequest, "please provide a email and password")
+			return
+		}
+
+		//get the accesstoken
+		token, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("error :%v", err))
+			return
+		}
+		// now token should be validated by resulting in an id
+		id, err := auth.ValidateJWT(token, apiCfg.JWTSigningKey)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("error :%v", err))
+			return
+		}
+		// now i have an Id get the user assosiated with it from the database
+		_, err = apiCfg.dbQueries.GetUserByID(r.Context(), id)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("error :%v", err))
+			return
+		}
+		// now you know the user exists in the database and the inserted is valid, update it
+		hs_pw, err := auth.HashPassword(ur.Password)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("error :%v", err))
+			return
+		}
+
+		p := database.UpdateUserParams{
+			ID:             id,
+			Email:          ur.Email,
+			HashedPassword: hs_pw,
+		}
+		upU, err := apiCfg.dbQueries.UpdateUser(r.Context(), p)
+		if err != nil {
+			respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("error :%v", err))
+			return
+		}
+		rU := User{
+			ID:        upU.ID,
+			Email:     upU.Email,
+			CreatedAt: upU.CreatedAt,
+			UpdatedAt: upU.UpdatedAt,
+		}
+		respondWithJSON(w, http.StatusOK, rU)
+
+	})
 	// LOGIN USER
 	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		ct := r.Header.Get("Content-Type")
